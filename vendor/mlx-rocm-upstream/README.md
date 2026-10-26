@@ -9,7 +9,7 @@
 | **Commit** | `9ce3117ecd7fc97f66796abd5a1cc00bcc01e5d7` (2026-09-28) |
 | **Last commit subject** | "rocm: mxfp8 prefill GEMM, cooperative softmax, device_info keys" |
 | **Lineage** | Forward-merge of the open upstream PR `ml-explore/mlx` **#2300** "[Experiment] ROCm backend" (head `NripeshN/mlx:rocm-support`, commit `75915908dfe5028335d318b10340313744fd3a8d`, 2026-07-19) onto the MLX base the Ollama fork pins. Adds GatedDeltaUpdate fallback, mxfp8 prefill GEMM, gfx1200/RDNA4 fixes, hipRTC custom-kernel routing. |
-| **License** | Apache-2.0 (see `LICENSE.upstream`, also `../LICENSE`) |
+| **License** | MIT (see `LICENSE.upstream`, also `../LICENSE`) |
 
 ## What was vendored
 
