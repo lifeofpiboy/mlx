@@ -1107,12 +1107,19 @@ void* Buffer::raw_ptr() {
     return cbuf.data;
   }
 
+  // t584: wait for all pending GPU work before ANY host read. The model
+  // stream is non-blocking (hipStreamNonBlocking) and is NOT ordered with
+  // the default (nullptr) stream; the previous default-stream-only sync
+  // let host reads race pending kernels — the token-ID read raced the
+  // argmax/logits work on the model stream and returned stale values
+  // (t583: non-deterministic first token across runs, degenerate decode).
+  // hipDeviceSynchronize covers every writer stream (the same call the
+  // device>=0 branch already made) and is a no-op when the GPU is idle.
+  (void)hipDeviceSynchronize();
+
   // Pinned host (hipHostMalloc, e.g. SmallSizePool scalars):
   // is_managed == false, device == -1. CPU-accessible directly.
   if (cbuf.device == -1 && !cbuf.is_managed) {
-    if (hipStreamQuery(nullptr) != hipSuccess) {
-      (void)hipStreamSynchronize(nullptr);
-    }
     return cbuf.data;
   }
 
@@ -1120,13 +1127,6 @@ void* Buffer::raw_ptr() {
   // CPU-inaccessible on discrete GPUs. Stage through host_shadow:
   // allocate a pinned host buffer, hipMemcpy VRAM→host, return host ptr.
   // The dirty flag ensures the next GPU access flushes host→VRAM.
-  if (cbuf.device == -1) {
-    if (hipStreamQuery(nullptr) != hipSuccess) {
-      (void)hipStreamSynchronize(nullptr);
-    }
-  } else {
-    (void)hipDeviceSynchronize();
-  }
   rocm::allocator().ensure_host_shadow(cbuf);
   cbuf.host_dirty = true;
   rocm::allocator().mark_dirty_shadow(&cbuf);
