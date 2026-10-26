@@ -419,6 +419,9 @@ CommandEncoder& Device::get_command_encoder(Stream s) {
   std::lock_guard<std::mutex> lk(encoders_mtx_);
   auto it = encoders_.find(s.index);
   if (it == encoders_.end()) {
+    if (getenv("MLX_GDN_DEBUG")) {
+      fprintf(stderr, "[g1] CommandEncoder for stream index=%d dev=%d\n", s.index, hip_device());
+    }
     auto [inserted_it, success] =
         encoders_.emplace(s.index, std::make_unique<CommandEncoder>(*this));
     it = inserted_it;

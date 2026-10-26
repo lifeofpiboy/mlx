@@ -931,11 +931,24 @@ static size_t host_shadow_chunk_bytes() {
 static hipError_t shadow_chunked_copy(void* dst, const void* src, size_t size,
                                      hipMemcpyKind kind) {
   const size_t chunk = host_shadow_chunk_bytes();
+  // t517: small copies use the legacy single-shot sync hipMemcpy (no stream,
+  // no leak). The t444/t454/t458 hang was size-dependent (>=300 MB single
+  // copies in kfd_wait_on_events); the pre-K3 wheel ran 9B loads (1856
+  // small flushes) on plain hipMemcpy with no hang. Large copies keep the
+  // t460 chunked fresh-stream path (hang-avoidance) with the t515 no-destroy
+  // (bounded leak: a few streams per large copy, not per small flush).
+  if (size <= chunk) {
+    return hipMemcpy(dst, src, size, kind);
+  }
   size_t off = 0;
+  int g1_streams_created = 0;
   while (off < size) {
     const size_t n = std::min(chunk, size - off);
     hipStream_t stream = nullptr;
     hipError_t err = hipStreamCreate(&stream);
+    if (err == hipSuccess && stream != nullptr) {
+      g1_streams_created++;
+    }
     if (err != hipSuccess || stream == nullptr) {
       // Fallback: sync hipMemcpy (the legacy path) if stream creation fails.
       err = hipMemcpy(static_cast<char*>(dst) + off,
@@ -956,6 +969,9 @@ static hipError_t shadow_chunked_copy(void* dst, const void* src, size_t size,
       return err;
     }
     off += n;
+  }
+  if (getenv("MLX_GDN_DEBUG")) {
+    fprintf(stderr, "[g1] shadow_chunked_copy size=%zu streams_created=%d", size, g1_streams_created);
   }
   return hipSuccess;
 }

@@ -162,7 +162,16 @@ void GatedDeltaUpdate::eval_gpu(
       q.flags().row_contiguous && k.flags().row_contiguous &&
       v.flags().row_contiguous && g.flags().row_contiguous &&
       beta.flags().row_contiguous && h0.flags().row_contiguous;
+  if (std::getenv("MLX_GDN_DEBUG")) {
+    fprintf(stderr, "GDN-DBG flags q=%d k=%d v=%d g=%d beta=%d h0=%d\n",
+            (int)q.flags().row_contiguous, (int)k.flags().row_contiguous,
+            (int)v.flags().row_contiguous, (int)g.flags().row_contiguous,
+            (int)beta.flags().row_contiguous, (int)h0.flags().row_contiguous);
+    fprintf(stderr, "GDN-DBG cond qdt=%d scalar=%d cont=%d T=%d B=%d\n",
+            q.dtype() == bfloat16 ? 1 : 0, (int)scalar_gates, (int)contiguous, T, B);
+  }
   if (q.dtype() != bfloat16 || !scalar_gates || !contiguous) {
+    if (std::getenv("MLX_GDN_DEBUG")) fprintf(stderr, "GDN-DBG FALLBACK\n");
     auto r = fallback_(inputs);
     outputs[0] = r[0];
     outputs[1] = r[1];
@@ -175,8 +184,11 @@ void GatedDeltaUpdate::eval_gpu(
   encoder.set_input_array(g);
   encoder.set_input_array(beta);
   encoder.set_input_array(h0);
+  if (std::getenv("MLX_GDN_DEBUG")) fprintf(stderr, "GDN-DBG pre-out-set\n");
   out.set_data(mlx::core::rocm::malloc_async(out.nbytes(), encoder));
+  if (std::getenv("MLX_GDN_DEBUG")) fprintf(stderr, "GDN-DBG post-out-set\n");
   state.set_data(mlx::core::rocm::malloc_async(state.nbytes(), encoder));
+  if (std::getenv("MLX_GDN_DEBUG")) fprintf(stderr, "GDN-DBG post-state-set\n");
   if (std::getenv("MLX_GDN_DEBUG")) {
     fprintf(stderr,
             "GDN-DBG post-set out.id=%p out.data=%p out.buf=%p "
