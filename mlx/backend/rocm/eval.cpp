@@ -423,6 +423,22 @@ void eval(array& arr) {
   if (rocm::g_decode_capturing.load(std::memory_order_relaxed)) {
     hipError_t le = hipGetLastError();
     rocm::g1_check_hip("in-op (after eval_gpu)", le);
+    if (true) {
+      for (auto& o : outputs) {
+        fprintf(stderr, "[g1t]   out %p sz=%zu %s\n",
+                o.buffer().ptr(), o.data_size(),
+                rocm::allocator().in_decode_arena(o.buffer().ptr())
+                    ? "ARENA"
+                    : "");
+      }
+      for (auto& i : arr.inputs()) {
+        fprintf(stderr, "[g1t]   in  %p sz=%zu %s\n",
+                i.buffer().ptr(), i.data_size(),
+                rocm::allocator().in_decode_arena(i.buffer().ptr())
+                    ? "ARENA"
+                    : "");
+      }
+    }
   }
 
   // G1 trace: while capturing, watch the capture status per op. Optionally

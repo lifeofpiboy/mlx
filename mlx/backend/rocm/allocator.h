@@ -114,6 +114,9 @@ class RocmAllocator : public allocator::Allocator {
   void flush_all_dirty_shadows();
   void mark_dirty_shadow(RocmBuffer* buf);
 
+  bool in_decode_arena(void* p) const {
+    return decode_arena_.contains(p);
+  }
   bool decode_arena_begin(size_t capacity, int device, void* stream);
   void decode_arena_reset();
   void decode_arena_freeze_floor();

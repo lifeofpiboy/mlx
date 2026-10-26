@@ -420,13 +420,25 @@ void RocmAllocator::free_async(RocmBuffer& buf, void* stream_v) {
                 static_cast<void*>(stream),
                 static_cast<void*>(buf.alloc_stream), buf.size);
       }
+      if (getenv("MLX_WORKER_DEBUG")) {
+        fprintf(stderr, "[worker] FREEASYNC ptr=%p size=%zu stream=%p\n",
+                buf.data, buf.size, (void*)stream);
+      }
       hipError_t fa = hipFreeAsync(buf.data, stream);
       g1_check_hip("hipFreeAsync (free_async, worker thread)", fa, "worker");
     } else {
+      if (getenv("MLX_WORKER_DEBUG")) {
+        fprintf(stderr, "[worker] FREE-IMMEDIATE ptr=%p size=%zu\n",
+                buf.data, buf.size);
+      }
       hipError_t ff = hipFree(buf.data);
       g1_check_hip("hipFree (free_async, worker thread)", ff, "worker");
     }
   } else {
+    if (getenv("MLX_WORKER_DEBUG")) {
+      fprintf(stderr, "[worker] FREE-IMMEDIATE ptr=%p size=%zu\n",
+                buf.data, buf.size);
+    }
     hipError_t ff = hipFree(buf.data);
     g1_check_hip("hipFree (free_async, worker thread)", ff, "worker");
   }
@@ -563,6 +575,10 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
             static_cast<int64_t>(need) - static_cast<int64_t>(hbm_cap);
         if (over > 0 && get_cache_memory() > 0) {
           // free_ callback → free_rocm_buffer → hipFreeAsync when pool path.
+          if (getenv("MLX_WORKER_DEBUG")) {
+            fprintf(stderr, "[worker] RECLAIM over=%ld cache=%zu\n",
+                    (long)over, get_cache_memory());
+          }
           buffer_cache_.release_cached_buffers(static_cast<size_t>(over));
         }
       };
@@ -714,6 +730,10 @@ void RocmAllocator::free(Buffer buffer, bool force) {
   }
   if (buf->data && decode_arena_.contains(buf->data)) {
     return;
+  }
+  if (getenv("MLX_WORKER_DEBUG")) {
+    fprintf(stderr, "[worker] FREE ptr=%p size=%zu (recycled)\n",
+            buf->data, buf->size);
   }
   // Alien sentinel (make_buffer): shell only.
   if (buf->alloc_stream == reinterpret_cast<void*>(static_cast<uintptr_t>(1))) {

@@ -110,6 +110,15 @@ void HipEvent::record(hipStream_t stream) {
 }
 
 bool HipEvent::completed() const {
+  // hipEventQuery is not capturable: while a decode-step stream capture is
+  // in progress it returns 900 (operation not permitted) and INVALIDATES
+  // the capture. Report "not complete" so the eval driver records a
+  // capturable cross-stream wait (or relies on same-stream ordering)
+  // instead of querying; the event is queried/detached on the next eager
+  // step. Eager (non-capturing) behavior is unchanged.
+  if (g_decode_capturing.load(std::memory_order_relaxed)) {
+    return false;
+  }
   return hipEventQuery(event_) == hipSuccess;
 }
 
