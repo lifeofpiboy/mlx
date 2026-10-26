@@ -6,11 +6,14 @@
 // chunked scan (gate prep + kkt_solve + chunk_scan, with the extreme-decay
 // repair inside the scan entry). Geometry outside the compiled kernels
 // (Dk/Dv != 128, Hv % Hk != 0, ratio > 8, masks, non-bf16 output, vector
-// gates, non-contiguous inputs) falls back to the per-token op-loop graph.
+// gates) falls back to the per-token op-loop graph. Non-row-contiguous
+// inputs (e.g. v as a raw split+reshape view in the GDN hybrid model) get
+// a row-contiguous copy before the fused kernels.
 
 #include <cstdlib>
 #include <sstream>
 
+#include "mlx/backend/gpu/copy.h"
 #include "mlx/backend/rocm/device.h"
 #include "mlx/backend/rocm/kernel_utils.hpp"
 #include "mlx/fast_primitives.h"
@@ -89,6 +92,21 @@ bool env_forced_fallback() {
     return e != nullptr && e[0] == '1';
   }();
   return forced;
+}
+
+// The fused kernels read raw buffer + offset (no strides): they require
+// row-contiguous inputs. In the GDN hybrid model v is a raw split+reshape
+// view (a slice of a wider row); q/k pass through rms_norm (fresh
+// contiguous buffers). Make a row-contiguous copy only for inputs that are
+// NOT row-contiguous; already-contiguous inputs pass through unchanged
+// (zero behavior change).
+array make_row_contiguous(const array& a, const Stream& s) {
+  if (a.flags().row_contiguous) {
+    return a;
+  }
+  array out(a.shape(), a.dtype(), nullptr, {});
+  copy_gpu(a, out, CopyType::General, s);
+  return out;
 }
 
 }  // namespace
@@ -170,7 +188,7 @@ void GatedDeltaUpdate::eval_gpu(
     fprintf(stderr, "GDN-DBG cond qdt=%d scalar=%d cont=%d T=%d B=%d\n",
             q.dtype() == bfloat16 ? 1 : 0, (int)scalar_gates, (int)contiguous, T, B);
   }
-  if (q.dtype() != bfloat16 || !scalar_gates || !contiguous) {
+  if (q.dtype() != bfloat16 || !scalar_gates) {
     if (std::getenv("MLX_GDN_DEBUG")) fprintf(stderr, "GDN-DBG FALLBACK\n");
     auto r = fallback_(inputs);
     outputs[0] = r[0];
@@ -178,12 +196,21 @@ void GatedDeltaUpdate::eval_gpu(
     return;
   }
 
-  encoder.set_input_array(q);
-  encoder.set_input_array(k);
-  encoder.set_input_array(v);
-  encoder.set_input_array(g);
-  encoder.set_input_array(beta);
-  encoder.set_input_array(h0);
+  // Row-contiguous copies for any non-row-contiguous input (v in the GDN
+  // hybrid model); already-contiguous inputs pass through unchanged.
+  array qc = make_row_contiguous(q, s);
+  array kc = make_row_contiguous(k, s);
+  array vc = make_row_contiguous(v, s);
+  array gc = make_row_contiguous(g, s);
+  array bc = make_row_contiguous(beta, s);
+  array hc = make_row_contiguous(h0, s);
+
+  encoder.set_input_array(qc);
+  encoder.set_input_array(kc);
+  encoder.set_input_array(vc);
+  encoder.set_input_array(gc);
+  encoder.set_input_array(bc);
+  encoder.set_input_array(hc);
   if (std::getenv("MLX_GDN_DEBUG")) fprintf(stderr, "GDN-DBG pre-out-set\n");
   out.set_data(mlx::core::rocm::malloc_async(out.nbytes(), encoder));
   if (std::getenv("MLX_GDN_DEBUG")) fprintf(stderr, "GDN-DBG post-out-set\n");
@@ -217,12 +244,12 @@ void GatedDeltaUpdate::eval_gpu(
                     : nullptr);
       }
       const int rc = r4d_gdn_recurrent_update_k128_v128_bf16_fp32state(
-          gpu_ptr<unsigned short>(q),
-          gpu_ptr<unsigned short>(k),
-          gpu_ptr<unsigned short>(v),
-          gpu_ptr<unsigned short>(g),
-          gpu_ptr<unsigned short>(beta),
-          gpu_ptr<float>(h0),
+          gpu_ptr<unsigned short>(qc),
+          gpu_ptr<unsigned short>(kc),
+          gpu_ptr<unsigned short>(vc),
+          gpu_ptr<unsigned short>(gc),
+          gpu_ptr<unsigned short>(bc),
+          gpu_ptr<float>(hc),
           gpu_ptr<unsigned short>(out),
           gpu_ptr<float>(state),
           B,
@@ -254,8 +281,8 @@ void GatedDeltaUpdate::eval_gpu(
 
     encoder.launch_kernel([&](hipStream_t stream) {
       int rc = r4d_gdn_gate_prep_c64_bf16(
-          gpu_ptr<unsigned short>(g),
-          gpu_ptr<unsigned short>(beta),
+          gpu_ptr<unsigned short>(gc),
+          gpu_ptr<unsigned short>(bc),
           gpu_ptr<float>(g_cum),
           gpu_ptr<float>(beta_f32),
           B,
@@ -268,7 +295,7 @@ void GatedDeltaUpdate::eval_gpu(
         throw std::runtime_error(msg.str());
       }
       rc = r4d_gdn_kkt_solve_k128_c64_bf16(
-          gpu_ptr<unsigned short>(k),
+          gpu_ptr<unsigned short>(kc),
           gpu_ptr<float>(beta_f32),
           gpu_ptr<float>(g_cum),
           gpu_ptr<unsigned short>(A),
@@ -285,13 +312,13 @@ void GatedDeltaUpdate::eval_gpu(
         throw std::runtime_error(msg.str());
       }
       rc = r4d_gdn_chunk_scan_k128_v128_c64_bf16(
-          gpu_ptr<unsigned short>(q),
-          gpu_ptr<unsigned short>(k),
-          gpu_ptr<unsigned short>(v),
+          gpu_ptr<unsigned short>(qc),
+          gpu_ptr<unsigned short>(kc),
+          gpu_ptr<unsigned short>(vc),
           gpu_ptr<unsigned short>(A),
           gpu_ptr<float>(g_cum),
           gpu_ptr<float>(beta_f32),
-          gpu_ptr<float>(h0),
+          gpu_ptr<float>(hc),
           gpu_ptr<unsigned short>(out),
           gpu_ptr<float>(state),
           B,
