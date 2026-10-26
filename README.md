@@ -1,121 +1,49 @@
-# MLX
+# vendored upstream: mlx ROCm backend (provenance)
 
-[**Quickstart**](#quickstart) | [**Installation**](#installation) |
-[**Documentation**](https://ml-explore.github.io/mlx/build/html/index.html) |
-[**Examples**](#examples)
+## Source
 
-[![CircleCI](https://circleci.com/gh/ml-explore/mlx.svg?style=svg)](https://circleci.com/gh/ml-explore/mlx)
+| | |
+|---|---|
+| **Repository** | https://github.com/maternion/mlx |
+| **Branch** | `rocm-current` |
+| **Commit** | `9ce3117ecd7fc97f66796abd5a1cc00bcc01e5d7` (2026-09-28) |
+| **Last commit subject** | "rocm: mxfp8 prefill GEMM, cooperative softmax, device_info keys" |
+| **Lineage** | Forward-merge of the open upstream PR `ml-explore/mlx` **#2300** "[Experiment] ROCm backend" (head `NripeshN/mlx:rocm-support`, commit `75915908dfe5028335d318b10340313744fd3a8d`, 2026-07-19) onto the MLX base the Ollama fork pins. Adds GatedDeltaUpdate fallback, mxfp8 prefill GEMM, gfx1200/RDNA4 fixes, hipRTC custom-kernel routing. |
+| **License** | MIT (see `LICENSE.upstream`, also `../LICENSE`) |
 
-MLX is an array framework for machine learning on Apple silicon,
-brought to you by Apple machine learning research.
+## What was vendored
 
-Some key features of MLX include:
+- `CMakeLists.upstream.txt` — the fork's top-level `CMakeLists.txt`
+  (carries the `MLX_BUILD_ROCM` option and the ROCm build wiring:
+  `CMAKE_HIP_ARCHITECTURES` handling, hip compiler discovery).
+- `mlx/` — the full `mlx/` source tree from the fork, most importantly:
+  - `mlx/backend/rocm/` — the complete ROCm backend mirroring
+    `mlx/backend/cuda/` file-for-file: allocator, device/worker/
+    CommandEncoder (HIP-graph capture + build-once decode replay + the
+    `ExecSlot` pool for the ROCm CLR kernelParams-by-pointer bug, clr#138),
+    all primitive ports, `quantized/` (WMMA QMM incl. the `Rdna4`
+    gfx1200/1201 tier + WMMA allowlist), `gemms/` (hipBLASLt + rocBLAS +
+    naive + GEMV, with the `GemmPrecision` capability table and the
+    gfx1201 fp8 GEMM bug note + `MLX_ROCM_GEMM_BF16` escape hatch),
+    flash attention (vector decode + WMMA fwd/bwd prefill), hipRTC JIT,
+    `host_stage` pinned-bounce host reads, custom P2P all-reduce
+    (no RCCL), `moe_swiglu`, per-arch tuning.
+  - `mlx/backend/gpu/` — the backend-agnostic GPU shim (the integration
+    seam: `MLX_USE_ROCM` selection in `gpu/primitives.cpp`).
+- `ci/build_rocm.yml` — the fork's CI (self-hosted Strix Halo runner,
+  `CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DMLX_ROCM_ARCHITECTURES=gfx1151"`).
 
-- **Familiar APIs**: MLX has a Python API that closely follows NumPy. MLX
-   also has fully featured C++, [C](https://github.com/ml-explore/mlx-c), and
-   [Swift](https://github.com/ml-explore/mlx-swift/) APIs, which closely mirror
-   the Python API. MLX has higher-level packages like `mlx.nn` and
-   `mlx.optimizers` with APIs that closely follow PyTorch to simplify building
-   more complex models.
+Not vendored: `python/` (Pybind11 bindings incl. the `mlx.core.rocm`
+module), `tests/`, `benchmarks/`, `.github` (except the ROCm workflow).
+They are in the upstream repo at the pinned commit; pull them in when the
+full-wheel build phase starts.
 
-- **Composable function transformations**: MLX supports composable function
-  transformations for automatic differentiation, automatic vectorization,
-  and computation graph optimization.
+## Build (upstream layout, for the full wheel)
 
-- **Lazy computation**: Computations in MLX are lazy. Arrays are only
-  materialized when needed.
-
-- **Dynamic graph construction**: Computation graphs in MLX are constructed
-  dynamically. Changing the shapes of function arguments does not trigger
-  slow compilations, and debugging is simple and intuitive.
-
-- **Multi-device**: Operations can run on any of the supported devices
-  (currently the CPU and the GPU).
-
-- **Unified memory**: A notable difference from MLX and other frameworks
-  is the *unified memory model*. Arrays in MLX live in shared memory.
-  Operations on MLX arrays can be performed on any of the supported
-  device types without transferring data.
-
-MLX is designed by machine learning researchers for machine learning
-researchers. The framework is intended to be user-friendly, but still efficient
-to train and deploy models. The design of the framework itself is also
-conceptually simple. We intend to make it easy for researchers to extend and
-improve MLX with the goal of quickly exploring new ideas.
-
-The design of MLX is inspired by frameworks like
-[NumPy](https://numpy.org/doc/stable/index.html),
-[PyTorch](https://pytorch.org/), [Jax](https://github.com/google/jax), and
-[ArrayFire](https://arrayfire.org/).
-
-## Examples
-
-The [MLX examples repo](https://github.com/ml-explore/mlx-examples) has a
-variety of examples, including:
-
-- [Transformer language model](https://github.com/ml-explore/mlx-examples/tree/main/transformer_lm) training.
-- Large-scale text generation with
-  [LLaMA](https://github.com/ml-explore/mlx-examples/tree/main/llms/llama) and
-  finetuning with [LoRA](https://github.com/ml-explore/mlx-examples/tree/main/lora).
-- Generating images with [Stable Diffusion](https://github.com/ml-explore/mlx-examples/tree/main/stable_diffusion).
-- Speech recognition with [OpenAI's Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper).
-
-## Quickstart
-
-See the [quick start
-guide](https://ml-explore.github.io/mlx/build/html/usage/quick_start.html)
-in the documentation.
-
-## Installation
-
-MLX is available on [PyPI](https://pypi.org/project/mlx/). To install MLX on
-macOS, run:
-
-```bash
-pip install mlx
+```
+CMAKE_ARGS="-DMLX_BUILD_ROCM=ON -DCMAKE_HIP_ARCHITECTURES=gfx1201 -DBLA_VENDOR=OpenBLAS" \
+  python setup.py bdist_wheel
 ```
 
-To install the CUDA backend on Linux, run:
-
-```bash
-pip install mlx[cuda]
-```
-
-To install a CPU-only Linux package, run:
-
-```bash
-pip install mlx[cpu]
-```
-
-Checkout the
-[documentation](https://ml-explore.github.io/mlx/build/html/install.html#)
-for more information on building the C++ and Python APIs from source.
-
-## Contributing
-
-Check out the [contribution guidelines](https://github.com/ml-explore/mlx/tree/main/CONTRIBUTING.md) for more information
-on contributing to MLX. See the
-[docs](https://ml-explore.github.io/mlx/build/html/install.html) for more
-information on building from source, and running tests.
-
-We are grateful for all of [our
-contributors](https://github.com/ml-explore/mlx/tree/main/ACKNOWLEDGMENTS.md#Individual-Contributors). If you contribute
-to MLX and wish to be acknowledged, please add your name to the list in your
-pull request.
-
-## Citing MLX
-
-The MLX software suite was initially developed with equal contribution by Awni
-Hannun, Jagrit Digani, Angelos Katharopoulos, and Ronan Collobert. If you find
-MLX useful in your research and wish to cite it, please use the following
-BibTex entry:
-
-```text
-@software{mlx2023,
-  author = {Awni Hannun and Jagrit Digani and Angelos Katharopoulos and Ronan Collobert},
-  title = {{MLX}: Efficient and flexible machine learning on Apple silicon},
-  url = {https://github.com/ml-explore},
-  version = {0.0},
-  year = {2023},
-}
-```
+`gfx1201` = RX 9070 XT (RDNA4). **Not** `gfx110x` (that is RDNA3 / RX 7000).
+ROCm 6.4+ supports gfx1200/1201; neon runs ROCm 7.x (TheRock/Fedora stack).
