@@ -6,6 +6,7 @@
 #include "mlx/backend/rocm/allocator.h"
 #include "mlx/backend/rocm/utils.h"
 #include "mlx/backend/rocm/worker.h"
+#include "mlx/backend/rocm/g1_hiplog.h"
 #include "mlx/utils.h"
 
 #include <chrono>
@@ -296,7 +297,7 @@ bool Device::is_rocblas_bf16_available() {
         0);
 
     // Sync and check if the GPU is still alive
-    hipError_t sync_err = hipDeviceSynchronize();
+    hipError_t sync_err = G1_HL_SYNC("hipDeviceSynchronize (device_check)", hipDeviceSynchronize(), "device_check");
     // Clear any lingering error
     (void)hipGetLastError();
 
@@ -1033,7 +1034,7 @@ static void g1_prewarm_rocblas(Device& dev, hipStream_t stream) {
         static_cast<float*>(fc), n);
     g1_check_rocblas("rocblas_sgemm (g1 prewarm f32)", st);
   }
-  hipError_t sy = hipStreamSynchronize(stream);
+  hipError_t sy = G1_HL_SYNC("hipStreamSynchronize (prewarm)", hipStreamSynchronize(stream), "prewarm");
   g1_check_hip("hipStreamSynchronize (g1 prewarm)", sy, "prewarm");
   (void)hipGetLastError();
   if (a)
@@ -1118,7 +1119,7 @@ bool CommandEncoder::decode_capture_begin() {
   // hipBLASLt's non-capturable lazy init).
   set_stream_capturing(true);
   hipError_t e =
-      hipStreamBeginCapture(stream_, hipStreamCaptureModeThreadLocal);
+      hipStreamBeginCapture(stream_, hipStreamCaptureModeGlobal);
   g1_check_hip("hipStreamBeginCapture", e, "begin");
   if (e != hipSuccess) {
     g_decode_capturing.store(false, std::memory_order_relaxed);

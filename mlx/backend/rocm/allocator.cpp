@@ -13,6 +13,7 @@
 #include "mlx/utils.h"
 
 #include <hip/hip_runtime.h>
+#include "mlx/backend/rocm/g1_hiplog.h"
 #include <unistd.h>
 
 #include <atomic>
@@ -962,7 +963,7 @@ static hipError_t shadow_chunked_copy(void* dst, const void* src, size_t size,
     err = hipMemcpyAsync(static_cast<char*>(dst) + off,
                         static_cast<const char*>(src) + off, n, kind, stream);
     if (err == hipSuccess) {
-      err = hipStreamSynchronize(stream);
+      err = G1_HL_SYNC("hipStreamSynchronize (shadow_chunked)", hipStreamSynchronize(stream), "shadow_chunked");
     }
     // t515: no hipStreamDestroy(stream) — see the comment above.
     if (err != hipSuccess) {
@@ -1115,7 +1116,7 @@ void* Buffer::raw_ptr() {
   // (t583: non-deterministic first token across runs, degenerate decode).
   // hipDeviceSynchronize covers every writer stream (the same call the
   // device>=0 branch already made) and is a no-op when the GPU is idle.
-  (void)hipDeviceSynchronize();
+  G1_HL_SYNC("hipDeviceSynchronize (raw_ptr)", hipDeviceSynchronize(), "raw_ptr");
 
   // Pinned host (hipHostMalloc, e.g. SmallSizePool scalars):
   // is_managed == false, device == -1. CPU-accessible directly.
