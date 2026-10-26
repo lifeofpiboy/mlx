@@ -125,6 +125,12 @@ class RocmAllocator : public allocator::Allocator {
   size_t decode_arena_high_water() const {
     return decode_arena_.high_water;
   }
+  size_t decode_arena_offset() const {
+    return decode_arena_.offset;
+  }
+  size_t decode_arena_capacity() const {
+    return decode_arena_.capacity;
+  }
   bool decode_arena_overflowed() const {
     return decode_arena_.overflowed;
   }

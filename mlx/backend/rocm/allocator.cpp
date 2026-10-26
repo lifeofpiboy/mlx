@@ -29,6 +29,12 @@ namespace mlx::core {
 
 namespace rocm {
 
+// G1 first-error tracking (defined in device.cpp).
+extern void g1_check_hip(const char* call, hipError_t err, const char* phase = nullptr);
+extern void g1_check_status(
+    const char* call, int code, const char* msg, const char* phase = nullptr);
+extern std::atomic<bool> g_decode_capturing;
+
 constexpr int page_size = 16384;
 
 // Any allocations smaller than this will try to use the small pool (CUDA).
@@ -144,18 +150,21 @@ inline void* unified_malloc(size_t size, bool& is_managed) {
 
   if (force_vram) {
     err = hipMalloc(&data, size);
+    g1_check_hip("hipMalloc (unified, force_vram)", err);
     if (err == hipSuccess) {
       is_managed = true;
       return data;
     }
   } else if (use_finegrained() && !use_managed) {
     err = hipExtMallocWithFlags(&data, size, hipDeviceMallocFinegrained);
+    g1_check_hip("hipExtMallocWithFlags (unified, finegrained)", err);
     if (err == hipSuccess) {
       is_managed = true;
       return data;
     }
   } else {
     err = hipMalloc(&data, size);
+    g1_check_hip("hipMalloc (unified)", err);
     if (err == hipSuccess) {
       is_managed = true;
       return data;
@@ -183,9 +192,11 @@ inline void* unified_malloc(size_t size, bool& is_managed) {
 
   if (managed_memory_supported()) {
     err = hipMallocManaged(&data, size);
+    g1_check_hip("hipMallocManaged (unified fallback)", err);
     is_managed = true;
   } else {
     err = hipHostMalloc(&data, size, hipHostMallocDefault);
+    g1_check_hip("hipHostMalloc (unified fallback)", err);
     is_managed = false;
   }
   if (err != hipSuccess) {
@@ -397,12 +408,26 @@ void RocmAllocator::free_async(RocmBuffer& buf, void* stream_v) {
       stream = static_cast<hipStream_t>(free_streams_[buf.device]);
     }
     if (stream) {
-      (void)hipFreeAsync(buf.data, stream);
+      // G1f: a cross-thread stream-ordered free on the capture stream
+      // invalidates the capture. Log every free that happens while
+      // g_decode_capturing is true, with the stream, to name the actor.
+      if (g_decode_capturing.load(std::memory_order_relaxed) &&
+          getenv("MLX_WORKER_DEBUG")) {
+        fprintf(stderr,
+                "[worker] free_async DURING CAPTURE: stream=%p "
+                "alloc_stream=%p size=%zu\n",
+                static_cast<void*>(stream),
+                static_cast<void*>(buf.alloc_stream), buf.size);
+      }
+      hipError_t fa = hipFreeAsync(buf.data, stream);
+      g1_check_hip("hipFreeAsync (free_async, worker thread)", fa, "worker");
     } else {
-      (void)hipFree(buf.data);
+      hipError_t ff = hipFree(buf.data);
+      g1_check_hip("hipFree (free_async, worker thread)", ff, "worker");
     }
   } else {
-    (void)hipFree(buf.data);
+    hipError_t ff = hipFree(buf.data);
+    g1_check_hip("hipFree (free_async, worker thread)", ff, "worker");
   }
   buf.data = nullptr;
 }
@@ -447,6 +472,7 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
     if (RocmBuffer* b = arena_alloc(size)) {
       return Buffer{b};
     }
+    fprintf(stderr, "[g1t] arena fallback (overflow) size=%zu\n", size);
   }
 
   if (size == 0) {
@@ -505,6 +531,7 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
       }
       (void)hipSetDevice(device);
       hipError_t err = hipMallocAsync(&data, size, stream);
+      g1_check_hip("hipMallocAsync (try_device_alloc)", err);
       if (err != hipSuccess || !data) {
         (void)hipGetLastError();
         return nullptr;
@@ -574,7 +601,8 @@ Buffer RocmAllocator::malloc_async(size_t size, int device, void* stream_v) {
       bool is_managed = true;
       lock.unlock();
       data = unified_malloc(buf->size, is_managed);
-      (void)hipMemcpy(data, buf->data, buf->size, hipMemcpyDeviceToDevice);
+      hipError_t mc = hipMemcpy(data, buf->data, buf->size, hipMemcpyDeviceToDevice);
+      g1_check_hip("hipMemcpy D2D (try_device_alloc retag)", mc);
       free_async(*buf);
       buf->data = data;
       buf->is_managed = is_managed;
@@ -771,6 +799,15 @@ RocmBuffer* RocmAllocator::arena_alloc(size_t size) {
   size_t aligned = (size + 255) & ~size_t(255);
   if (a.offset + aligned > a.capacity) {
     a.overflowed = true;
+    {
+      static std::atomic<int> n_ov{0};
+      int n = n_ov.fetch_add(1) + 1;
+      if (n <= 32 || n % 1000 == 0) {
+        fprintf(stderr,
+                "[g1t] arena overflow #%d size=%zu aligned=%zu offset=%zu cap=%zu\n",
+                n, size, aligned, a.offset, a.capacity);
+      }
+    }
     return nullptr;
   }
   RocmBuffer* rb;
@@ -802,7 +839,8 @@ bool RocmAllocator::decode_arena_begin(
   std::lock_guard lock(mutex_);
   if (!decode_arena_.base || decode_arena_.capacity < capacity) {
     if (decode_arena_.base) {
-      (void)hipFree(decode_arena_.base);
+      hipError_t af = hipFree(decode_arena_.base);
+      g1_check_hip("hipFree (decode_arena_begin, reallocate)", af);
       active_memory_ -= decode_arena_.capacity;
       decode_arena_.base = nullptr;
       decode_arena_.capacity = 0;
@@ -811,6 +849,10 @@ bool RocmAllocator::decode_arena_begin(
     bool arena_managed = false;
     p = unified_malloc(capacity, arena_managed);
     if (!p) {
+      // G1f: name the arena alloc failure in the first-error log.
+      g1_check_status(
+          "decode_arena_begin: unified_malloc", 1, "arena alloc failed",
+          "arena");
       (void)hipGetLastError();
       return false;
     }
@@ -936,6 +978,7 @@ void RocmAllocator::ensure_host_shadow(RocmBuffer& buf) {
   if (!buf.host_dirty) {
     hipError_t err = shadow_chunked_copy(buf.host_shadow, buf.data, buf.size,
                                         hipMemcpyDeviceToHost);
+    g1_check_hip("shadow_chunked_copy D2H (ensure_host_shadow)", err);
     if (err != hipSuccess) {
       std::ostringstream oss;
       oss << "hipMemcpy (host shadow) failed: " << hipGetErrorString(err)
@@ -949,8 +992,9 @@ void RocmAllocator::flush_host_shadow(RocmBuffer& buf) {
   if (buf.host_shadow == nullptr || !buf.host_dirty) {
     return;
   }
-  (void)shadow_chunked_copy(buf.data, buf.host_shadow, buf.size,
-                           hipMemcpyHostToDevice);
+  hipError_t mc = shadow_chunked_copy(buf.data, buf.host_shadow, buf.size,
+                                     hipMemcpyHostToDevice);
+  g1_check_hip("shadow_chunked_copy H2D (flush_host_shadow)", mc);
   buf.host_dirty = false;
 }
 
@@ -963,8 +1007,9 @@ void RocmAllocator::flush_all_dirty_shadows() {
   std::lock_guard lock(mutex_);
   for (auto* buf : dirty_shadows_) {
     if (buf && buf->host_shadow && buf->host_dirty) {
-      (void)shadow_chunked_copy(buf->data, buf->host_shadow, buf->size,
-                                hipMemcpyHostToDevice);
+      hipError_t mc = shadow_chunked_copy(buf->data, buf->host_shadow, buf->size,
+                                         hipMemcpyHostToDevice);
+      g1_check_hip("shadow_chunked_copy H2D (flush_all_dirty_shadows)", mc);
       buf->host_dirty = false;
     }
   }
