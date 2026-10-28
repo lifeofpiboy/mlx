@@ -1196,7 +1196,7 @@ std::vector<array> gdn_prep(
       /* output shapes */
       {{key_dim}, {(int)k.size()}, {value_dim}, {(int)bb.size()}, {(int)aa.size()}},
       /* dtypes */
-      {bfloat16, bfloat16, bfloat16, bfloat16, bfloat16},
+      {bfloat16, bfloat16, bfloat16, bfloat16, float32},
       /* primitive */
       std::make_shared<GdnPrep>(
           s,

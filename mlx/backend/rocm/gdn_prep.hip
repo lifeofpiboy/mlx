@@ -106,7 +106,7 @@ __global__ void gdn_prep_kernel(
     T* __restrict__ k_conv,
     T* __restrict__ v_conv,
     T* __restrict__ beta_out,
-    T* __restrict__ g_out,
+    float* __restrict__ g_out,
     int key_dim,
     int value_dim,
     int conv_dim,
@@ -143,13 +143,24 @@ __global__ void gdn_prep_kernel(
     int t = threadIdx.x;
     if (t < value_dim / 128) {  // num_v_heads
       beta_out[t] = Sigmoid{}(b[t]);
-      float a_f = static_cast<float>(a[t]);
-      float db_f = static_cast<float>(dt_bias[t]);
-      float sum = a_f + db_f;
-      float sp = LogAddExp{}(sum, 0.0f);
+      // Bit-exact compute_g chain (every intermediate rounding matches the
+      // unfused op sequence):
+      //   sum_bf = (bf16)(f32(a) + f32(dt_bias))            [Add bf16]
+      //   sp_bf  = (bf16)(max + log1p(exp(min - max)))     [LogAddExp bf16]
+      //   e_al   = expf(A_log)                             [Exp f32]
+      //   g      = expf(-(e_al * f32(sp_bf)))             [f32; stays f32]
+      // g stays f32: the GDN recurrent kernel reads it as u16 pairs, exactly
+      // as the unfused path feeds it (f32 g, no astype).
+      T sum_bf = static_cast<T>(static_cast<float>(a[t]) +
+                               static_cast<float>(dt_bias[t]));
+      float fx = static_cast<float>(sum_bf);
+      float mxv = fmaxf(fx, 0.0f);
+      float mnv = fminf(fx, 0.0f);
+      float sp_f = mxv + log1pf(expf(mnv - mxv));
+      float sp = static_cast<float>(static_cast<T>(sp_f));
       float e_al = expf(A_log[t]);
       float arg = -e_al * sp;
-      g_out[t] = static_cast<T>(expf(arg));
+      g_out[t] = expf(arg);
     }
   }
 }
@@ -179,13 +190,17 @@ __global__ void gdn_qk_norm_kernel(
   T* out = is_q ? (q_normed + (int64_t)head * head_dim)
                : (k_normed + (int64_t)head * head_dim);
   float scale = is_q ? (inv_scale * inv_scale) : inv_scale;
+  // The unfused path scales with a python float * bf16 array: the scalar is
+  // cast to bf16 first, then the multiply is (bf16)(f32 * f32). Pre-round
+  // the scale to bf16 to match bit-exactly (inv_scale is not exact in bf16).
+  float scale_f = static_cast<float>(static_cast<T>(scale));
   T one = static_cast<T>(1.0f);
   T* w = &one;  // weight=None -> w[0]=1, w_stride=0
   gdn_rms_norm_row<T, BLOCK_DIM, N_READS>(
       in, w, rms_out, rms_eps, head_dim, 0);
   __syncthreads();
   for (int i = threadIdx.x; i < head_dim; i += BLOCK_DIM) {
-    float v = static_cast<float>(rms_out[i]) * scale;
+    float v = static_cast<float>(rms_out[i]) * scale_f;
     out[i] = static_cast<T>(v);
   }
 }
@@ -239,7 +254,7 @@ int launch_gdn_prep(
   rocm::gdn_prep_kernel<T><<<grid, block, 0, stream>>>(
       (const T*)q_raw, (const T*)k_raw, (const T*)v_raw, (const T*)b,
       (const T*)a, A_log, dt_bias, (const T*)conv_state, (const T*)conv_weight,
-      (T*)q_conv, (T*)k_conv, (T*)v_conv, (T*)beta_out, (T*)g_out,
+      (T*)q_conv, (T*)k_conv, (T*)v_conv, (T*)beta_out, (float*)g_out,
       key_dim, value_dim, conv_dim, kernel_size);
   return 0;
 }
