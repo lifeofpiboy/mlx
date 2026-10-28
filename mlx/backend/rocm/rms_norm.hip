@@ -215,7 +215,7 @@ __global__ void rms_norm_residual_kernel(
   rms_norm_residual_row<T, BLOCK_DIM, N_READS>(
       x + (int64_t)row * axis_size,
       r + (int64_t)row * axis_size,
-      w, out, eps, axis_size, w_stride);
+      w, out + (int64_t)row * axis_size, eps, axis_size, w_stride);
 }
 
 // t827: fused output * sigmoid(gate) for FA gated attention
@@ -529,22 +529,16 @@ void RMSNormResidual::eval_gpu(
 
   auto launch = [&](auto tag) {
     using DT = decltype(tag);
-    if (n_rows <= 64 && axis_size <= 8192) {
-      // K2: decode fast path — one warp per row.
-      constexpr int WARP_BLOCK = 256;
-      int32_t n_blocks = (n_rows * WARP_SIZE + WARP_BLOCK - 1) / WARP_BLOCK;
-      encoder.add_kernel_node(
-          &rocm::rms_norm_residual_warp_kernel<DT>,
-          dim3(n_blocks), dim3(WARP_BLOCK), 0,
-          gpu_ptr<DT>(x), gpu_ptr<DT>(r), gpu_ptr<DT>(w), gpu_ptr<DT>(out),
-          eps_, axis_size, w_stride, n_rows);
-    } else {
-      encoder.add_kernel_node(
-          &rocm::rms_norm_residual_kernel<DT, BLOCK_DIM, N_READS>,
-          dim3(n_rows), dim3(BLOCK_DIM), 0,
-          gpu_ptr<DT>(x), gpu_ptr<DT>(r), gpu_ptr<DT>(w), gpu_ptr<DT>(out),
-          eps_, axis_size, w_stride);
-    }
+    // t827: always use the block-row kernel — the SAME reduction structure as
+    // the standalone rms_norm op for every shape/dtype, so the fused
+    // residual-add + rms_norm is bit-identical to (Add op + rms_norm op).
+    // (The one-warp-per-row decode fast path is dropped: its warp reduction
+    // order differs from the standalone block-row reduction.)
+    encoder.add_kernel_node(
+        &rocm::rms_norm_residual_kernel<DT, BLOCK_DIM, N_READS>,
+        dim3(n_rows), dim3(BLOCK_DIM), 0,
+        gpu_ptr<DT>(x), gpu_ptr<DT>(r), gpu_ptr<DT>(w), gpu_ptr<DT>(out),
+        eps_, axis_size, w_stride);
   };
   switch (out.dtype()) {
     case float32: launch(float{}); break;
