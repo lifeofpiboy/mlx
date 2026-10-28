@@ -328,13 +328,13 @@ void GdnPrep::eval_gpu(
 
   encoder.launch_kernel([&](hipStream_t stream) {
     int rc = launch_gdn_prep(
-        q.data_shared_ptr().get(), k.data_shared_ptr().get(),
-        v.data_shared_ptr().get(), bb.data_shared_ptr().get(),
-        aa.data_shared_ptr().get(), (float*)al.data_shared_ptr().get(),
-        (float*)db.data_shared_ptr().get(), cs.data_shared_ptr().get(),
-        cw.data_shared_ptr().get(), q_conv.data_shared_ptr().get(),
-        k_conv.data_shared_ptr().get(), v_conv.data_shared_ptr().get(),
-        beta.data_shared_ptr().get(), g.data_shared_ptr().get(), key_dim,
+        gpu_ptr<void>(q), gpu_ptr<void>(k),
+        gpu_ptr<void>(v), gpu_ptr<void>(bb),
+        gpu_ptr<void>(aa), gpu_ptr<float>(al),
+        gpu_ptr<float>(db), gpu_ptr<void>(cs),
+        gpu_ptr<void>(cw), gpu_ptr<void>(q_conv),
+        gpu_ptr<void>(k_conv), gpu_ptr<void>(v_conv),
+        gpu_ptr<void>(beta), gpu_ptr<void>(g), key_dim,
         value_dim, conv_dim, 4, stream);
     if (rc != 0) {
       throw std::runtime_error("gdn_prep: conv+silu+beta+g launch failed");
@@ -347,8 +347,8 @@ void GdnPrep::eval_gpu(
     int num_heads = key_dim / 128;
     int head_dim = 128;
     int rc = launch_gdn_qk_norm(
-        q_conv.data_shared_ptr().get(), k_conv.data_shared_ptr().get(),
-        q_normed.data_shared_ptr().get(), k_normed.data_shared_ptr().get(),
+        gpu_ptr<void>(q_conv), gpu_ptr<void>(k_conv),
+        gpu_ptr<void>(q_normed), gpu_ptr<void>(k_normed),
         inv_scale, rms_eps, num_heads, head_dim, stream);
     if (rc != 0) {
       throw std::runtime_error("gdn_prep: qk_norm launch failed");
@@ -375,8 +375,8 @@ void GdnNormGated::eval_gpu(
 
   encoder.launch_kernel([&](hipStream_t stream) {
     int rc = launch_gdn_norm_gated(
-        o.data_shared_ptr().get(), zg.data_shared_ptr().get(),
-        w.data_shared_ptr().get(), result.data_shared_ptr().get(), eps_,
+        gpu_ptr<void>(o), gpu_ptr<void>(zg),
+        gpu_ptr<void>(w), gpu_ptr<void>(result), eps_,
         head_dim, num_heads, stream);
     if (rc != 0) {
       throw std::runtime_error("gdn_norm_gated: launch failed");
