@@ -3618,6 +3618,13 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   // materialization. Default ON where the device has native WMMA (opt out with
   // MLX_ROCM_WMMA_QMM=0); dispatch below falls to rocBLAS when WMMA is absent or
   // the shape doesn't qualify. Single (non-batched) bf16 affine prefill.
+  //
+  // M > 8, not M > 1: the 64x128 tile is prefill-shaped. Small-M decode and
+  // spec-decode verify (M = 2..8) run the QMV decode kernels instead (wide
+  // QMV supports M <= 8; the dequant/rocBLAS crossover takes over at M >= 8 on
+  // large shapes). The tiled GEMM at M = 2 does ~32x the useful work and was
+  // measured 5.8x slower than the QMV path (S=2 verify 144 ms vs 39 ms on the
+  // 9B 4bit model), which is what made batched MTP verify 4.6x a T=1 forward.
   // Low-CU iGPUs (gfx1152 4–8 CU): skip WMMA-QMM — fat 64×128 tiles thrash the
   // tiny L2 and have produced garbage/NaN under APU memory pressure; QMV/dequant
   // paths are safer. Force on with MLX_ROCM_WMMA_QMM=1.
@@ -3638,7 +3645,7 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
     if (want_wmma && transpose_ && mode_ == QuantizationMode::Affine &&
         x.dtype() == bfloat16 && scales.dtype() == bfloat16 &&
         (!biases.has_value() || biases->dtype() == bfloat16) &&
-        batch_count == 1 && x_batch_count == 1 && w_batch_count == 1 && M > 1 &&
+        batch_count == 1 && x_batch_count == 1 && w_batch_count == 1 && M > 8 &&
         (N % 16 == 0) && group_size_ == 64 && (K % 64 == 0) &&
         (bits_ == 4 || bits_ == 6 || bits_ == 8) && d.has_native_wmma()) {
       dim3 block(128, 1, 1);

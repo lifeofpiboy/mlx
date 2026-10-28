@@ -229,7 +229,12 @@ void GatedDeltaUpdate::eval_gpu(
                 : nullptr);
   }
 
-  if (T == 1) {
+  // Small T (decode + spec-decode verify, T <= 8) runs the recurrent
+  // kernel: it loops sequentially over T, so T=2 is bit-identical to two
+  // T=1 steps. The chunked scan below is a different reduction order
+  // (not bit-identical) and carries chunk machinery that is slower than a
+  // few recurrent steps for small T. T > 8 (prefill) keeps the scan.
+  if (T <= 8) {
     // Decode: one recurrent state update per token. The recurrent kernel
     // reads the multiplicative gates directly, so no temp buffers are needed.
     encoder.launch_kernel([&](hipStream_t stream) {

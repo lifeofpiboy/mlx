@@ -413,6 +413,43 @@ void init_fast(nb::module_& parent_module) {
         )");
 
   m.def(
+      "gdn_prep",
+      &mlx::core::fast::gdn_prep,
+      "q_raw"_a,
+      "k_raw"_a,
+      "v_raw"_a,
+      "b"_a,
+      "a"_a,
+      "A_log"_a,
+      "dt_bias"_a,
+      "conv_state"_a,
+      "conv_weight"_a,
+      "inv_scale"_a,
+      "eps"_a,
+      "stream"_a = nb::none(),
+      R"(
+            Fused GDN decode prep: conv1d + silu + q/k norm + beta + g.
+
+            Returns:
+                Tuple of (q_normed, k_normed, v_conv, beta, g)
+        )");
+
+  m.def(
+      "gdn_norm_gated",
+      &mlx::core::fast::gdn_norm_gated,
+      "out"_a,
+      "z"_a,
+      "weight"_a,
+      "eps"_a,
+      "stream"_a = nb::none(),
+      R"(
+            Fused norm_gated: rms_norm + precise_swiglu.
+
+            Returns:
+                The normalized + gated output.
+        )");
+
+  m.def(
       "metal_kernel",
       [](const std::string& name,
          const std::vector<std::string>& input_names,
