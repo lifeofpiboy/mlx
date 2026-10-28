@@ -6,6 +6,7 @@
 #include <nanobind/stl/vector.h>
 
 #include "mlx/backend/rocm/rocm.h"
+#include "mlx/fast.h"
 
 namespace mx = mlx::core;
 namespace nb = nanobind;
@@ -98,5 +99,65 @@ void init_rocm(nb::module_& m) {
 
         Same weight layouts as moe_swiglu_sorted. Returns
         (dx, dw_gate, dw_up, dw_down) all bf16.
+      )pbdoc");
+
+  rocm.def(
+      "rms_norm_residual",
+      [](const mx::array& x,
+         const mx::array& residual,
+         const mx::array& weight,
+         float eps,
+         mx::StreamOrDevice s) {
+        if (std::holds_alternative<std::monostate>(s)) {
+          s = mx::Device(mx::Device::gpu);
+        }
+        return mx::fast::rms_norm_residual(x, residual, weight, eps, s);
+      },
+      "x"_a, "residual"_a, "weight"_a, "eps"_a,
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      R"pbdoc(
+        Fused residual add + RMSNorm: w * rmsnorm(x + residual).
+      )pbdoc");
+
+  rocm.def(
+      "kv_append",
+      [](const mx::array& keys,
+         const mx::array& values,
+         const mx::array& cache_keys,
+         const mx::array& cache_values,
+         int64_t offset,
+         mx::StreamOrDevice s) {
+        if (std::holds_alternative<std::monostate>(s)) {
+          s = mx::Device(mx::Device::gpu);
+        }
+        return mx::fast::kv_append(
+            keys, values, cache_keys, cache_values, offset, s);
+      },
+      "keys"_a, "values"_a, "cache_keys"_a, "cache_values"_a, "offset"_a,
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      R"pbdoc(
+        Batched in-place KV append: writes keys and values into the
+        pre-allocated cache buffers at `offset` in one kernel launch.
+        Returns the updated (in-place) cache arrays.
+      )pbdoc");
+
+  rocm.def(
+      "mul_sigmoid",
+      [](const mx::array& a,
+         const mx::array& g,
+         mx::StreamOrDevice s) {
+        if (std::holds_alternative<std::monostate>(s)) {
+          s = mx::Device(mx::Device::gpu);
+        }
+        return mx::fast::mul_sigmoid(a, g, s);
+      },
+      "a"_a, "g"_a,
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      R"pbdoc(
+        Fused output * sigmoid(gate) for FA gated attention.
+        Bit-exact with the unfused (sigmoid, multiply) chain.
       )pbdoc");
 }

@@ -72,6 +72,99 @@ class RMSNorm : public Custom {
   float eps_;
 };
 
+// K2: fused residual-add + RMSNorm. Computes w * rmsnorm(x + residual) in one
+// kernel, replacing the (add, rms_norm) pair in the pre-norm decoder layers.
+class RMSNormResidual : public Custom {
+ public:
+  RMSNormResidual(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      float eps)
+      : Custom(stream, std::move(fallback)), eps_(eps) {}
+
+  static bool use_fallback(Stream stream);
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(RMSNormResidual)
+  bool is_equivalent(const Primitive& other) const override;
+  DEFINE_INPUT_OUTPUT_SHAPE()
+
+  auto state() const {
+    return std::make_pair(nullptr, eps_);
+  }
+
+ private:
+  float eps_;
+};
+
+// K2: batched in-place KV append. Writes the new keys AND values into the
+// pre-allocated cache buffers at `offset` in a single kernel launch, replacing
+// the two per-tensor slice_update (Copy) ops of KVCache.update_and_fetch.
+class KVAppend : public Custom {
+ public:
+  KVAppend(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback,
+      int64_t offset)
+      : Custom(stream, std::move(fallback)), offset_(offset) {}
+
+  static bool use_fallback(Stream s);
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(KVAppend)
+  bool is_equivalent(const Primitive& other) const override;
+  std::vector<Shape> output_shapes(const std::vector<array>& inputs) override {
+    return {inputs[2].shape(), inputs[3].shape()};
+  }
+
+  auto state() const {
+    return std::make_pair(nullptr, offset_);
+  }
+
+ private:
+  int64_t offset_;
+};
+
+// t827: fused output * sigmoid(gate) for FA gated attention. Replaces the
+// (sigmoid, multiply) pair. Bit-exact with the unfused chain by
+// construction (see the kernel comment in rms_norm.hip).
+class MulSigmoid : public Custom {
+ public:
+  MulSigmoid(
+      Stream stream,
+      std::function<std::vector<array>(std::vector<array>)> fallback)
+      : Custom(stream, std::move(fallback)) {}
+
+  static bool use_fallback(Stream stream);
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override {
+    throw std::runtime_error("NYI");
+  }
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  DEFINE_NAME(MulSigmoid)
+  DEFINE_DEFAULT_IS_EQUIVALENT()
+  DEFINE_INPUT_OUTPUT_SHAPE()
+
+  auto state() const {
+    return std::make_pair(nullptr, 0);
+  }
+};
+
 class RMSNormVJP : public Custom {
  public:
   RMSNormVJP(
